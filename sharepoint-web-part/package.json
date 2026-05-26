@@ -16,7 +16,7 @@
     "@microsoft/sp-office-ui-fabric-core": "1.21.1",
     "@microsoft/sp-property-pane": "1.21.1",
     "@microsoft/sp-webpart-base": "1.21.1",
-    "@pdftron/webviewer": "^11.8.0",
+    "@pdftron/webviewer": "11.12.0",
     "dotenv": "^16.0.1",
     "dotenv-expand": "^8.0.3",
     "tslib": "2.3.1"

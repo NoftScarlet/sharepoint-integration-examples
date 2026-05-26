@@ -9,8 +9,6 @@ import WebViewer, { Core, UI, WebViewerInstance } from '@pdftron/webviewer';
 
 import * as strings from 'WebviewerWebPartStrings';
 
-import GraphConsumer from './components/GraphConsumer';
-
 export interface IWebviewerWebPartProps {
   description: string;
 }
@@ -20,7 +18,6 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
   private _isDarkTheme: boolean = false;
   private _environmentMessage: string = '';
   private _mode: string;
-  private _graphConsumer: GraphConsumer;
 
   public validateQueryParam(urlParams: URLSearchParams): boolean {
     const necessaryParams: string[] = ['filename'];
@@ -35,22 +32,23 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
 
   public render(): void {
     this.domElement.style.height = '1000px';
+    const siteRelativeUrl: string = this._siteServerRelativeUrl();
+    const sampleFileServerRelativeUrl: string = `${siteRelativeUrl}/${process.env.FOLDER_URL}/webviewer-sharepoint-sample.pdf`;
 
     WebViewer({
       // We suggest to use the method of uploading static files to the Documents folder in your sharepoint site
       // The provided path below is a template, it may varies in your site
-      path: `https://${process.env.TENANT_ID}.sharepoint.com/sites/${process.env.SITE_NAME}/Shared Documents/${process.env.WEBVIEWER_LIB_FOLDER_PATH}`,
-      initialDoc: 'https://pdftron.s3.amazonaws.com/downloads/pl/demo-annotated.pdf',
+      path: `https://${process.env.TENANT_ID}.sharepoint.com/sites/${process.env.SITE_NAME}/Shared%20Documents/${process.env.WEBVIEWER_LIB_FOLDER_PATH}/`,
+      initialDoc: `${window.location.origin}${siteRelativeUrl}/_api/web/GetFileByServerRelativePath(decodedurl='${this._escapeODataString(sampleFileServerRelativeUrl)}')/$value`,
     }, this.domElement)
     .then(async instance => {
-      this._graphConsumer = new GraphConsumer(this.context);
-      await this._graphConsumer.GetCurrentUser();
-      await this._graphConsumer.ListUsers();
-      const userData: UI.MentionsManager.UserData[] = this._graphConsumer.users.map(s =>
-        ({ value: s.displayName, email: s.mail }));
-      console.info(userData);
+      const currentUserName: string = this.context.pageContext.user.displayName || this.context.pageContext.user.email || this.context.pageContext.user.loginName;
+      const userData: UI.MentionsManager.UserData[] = [{
+        value: currentUserName,
+        email: this.context.pageContext.user.email
+      }];
       instance.UI.mentions.setUserData(userData);
-      instance.Core.annotationManager.setCurrentUser(this._graphConsumer.currentUser.displayName);
+      instance.Core.annotationManager.setCurrentUser(currentUserName);
 
       const { Feature } = instance.UI;
       instance.UI.enableFeatures([Feature.FilePicker]);
@@ -62,7 +60,8 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
         this._mode = "sharepoint-file";
         const filename: string = urlParams.get("filename");
         const folderName: string = urlParams.get("foldername");
-        const docURL: string = `${window.location.origin}/sites/${process.env.SITE_NAME}/_api/web/GetFolderByServerRelativeUrl('${folderName}')/Files(url='${filename}')/$value`;
+        const fileServerRelativeUrl: string = `${siteRelativeUrl}/${folderName}/${filename}`;
+        const docURL: string = `${window.location.origin}${siteRelativeUrl}/_api/web/GetFileByServerRelativePath(decodedurl='${this._escapeODataString(fileServerRelativeUrl)}')/$value`;
     
         instance.UI.loadDocument(docURL, {filename});
       } else {
@@ -72,14 +71,22 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
     .catch(err => console.error(err));
   }
 
+  private _siteServerRelativeUrl(): string {
+    return `/sites/${process.env.SITE_NAME}`;
+  }
+
+  private _escapeODataString(value: string): string {
+    return value.replace(/'/g, "''");
+  }
+
   private _createSaveFileButton(instance: WebViewerInstance): void {
-    instance.UI.setHeaderItems(function(header: UI.Header) {
+    instance.UI.setHeaderItems((header: UI.Header) => {
       const saveFileButton: unknown = {
         type: 'actionButton',
         dataElement: 'saveFileButton',
         title: 'Save file to sharepoint',
         img: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M0 0h24v24H0z" fill="none"/><path d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></svg>',
-        onClick: async function() {
+        onClick: async () => {
           instance.UI.openElements(['loadingModal']);
           if (this._mode === 'sharepoint-file') {
             const searchparams: URLSearchParams = new URLSearchParams(window.location.search);
@@ -135,7 +142,9 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
     const file: File = new File([fileArray], fileName, {
       type: 'application/pdf'
     });
-    await fetch(`${window.location.origin}/sites/${process.env.SITE_NAME}/_api/web/GetFolderByServerRelativeUrl('${folderUrl}')/Files/add(url='${fileName}', overwrite=true)`, {
+    const siteRelativeUrl: string = this._siteServerRelativeUrl();
+    const folderServerRelativeUrl: string = folderUrl.startsWith('/') ? folderUrl : `${siteRelativeUrl}/${folderUrl}`;
+    await fetch(`${window.location.origin}${siteRelativeUrl}/_api/web/GetFolderByServerRelativePath(decodedurl='${this._escapeODataString(folderServerRelativeUrl)}')/Files/add(url='${this._escapeODataString(fileName)}', overwrite=true)`, {
       method: 'POST',
       body: file,
       headers: {

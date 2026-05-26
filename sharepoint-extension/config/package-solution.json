@@ -3,8 +3,9 @@
   "solution": {
     "name": "sharepoint-extension-client-side-solution",
     "id": "0186dca1-6e2e-4016-930d-3d0aa9c4d271",
-    "version": "1.0.0.0",
+    "version": "1.0.0.1",
     "includeClientSideAssets": true,
+    "skipFeatureDeployment": true,
     "isDomainIsolated": false,
     "developer": {
       "name": "",
