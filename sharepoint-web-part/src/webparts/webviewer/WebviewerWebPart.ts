@@ -27,6 +27,10 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
   private _mode: string;
   private _accessMode: AccessMode = 'full';
   private _modalMessageElement: HTMLElement;
+  private _webViewerInstance: WebViewerInstance | undefined;
+  private _viewerContainer: HTMLElement | undefined;
+  private _viewerInitKey: string = '';
+  private _renderGeneration: number = 0;
 
   public validateQueryParam(urlParams: URLSearchParams): boolean {
     return !!urlParams.get('fileUrl') || (!!urlParams.get('filename') && !!urlParams.get('foldername'));
@@ -40,6 +44,22 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
     const requestedFileServerRelativeUrl: string = this._getRequestedFileServerRelativeUrl(urlParams, siteRelativeUrl);
     const fileServerRelativeUrl: string = requestedFileServerRelativeUrl || sampleFileServerRelativeUrl;
     const initialFileName: string = urlParams.get('filename') || this._getFileNameFromServerRelativeUrl(fileServerRelativeUrl);
+    const viewerInitKey: string = `${fileServerRelativeUrl}|${initialFileName}`;
+
+    if (this._viewerInitKey === viewerInitKey && this._viewerContainer && this.domElement.contains(this._viewerContainer)) {
+      return;
+    }
+
+    this._renderGeneration++;
+    const renderGeneration: number = this._renderGeneration;
+    this._viewerInitKey = viewerInitKey;
+    this._disposeWebViewerInstance();
+    this.domElement.replaceChildren();
+
+    this._viewerContainer = document.createElement('div');
+    this._viewerContainer.style.height = '100%';
+    this._viewerContainer.style.width = '100%';
+    this.domElement.appendChild(this._viewerContainer);
 
     WebViewer({
       // We suggest to use the method of uploading static files to the Documents folder in your sharepoint site
@@ -50,8 +70,14 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
       // SharePoint Online's CSP does not allow script-src blob:, so force WebViewer's PDF worker
       // to load its worker JavaScript files directly instead of wrapping them in object URL blobs.
       disableObjectURLBlobs: true,
-    }, this.domElement)
+    }, this._viewerContainer)
     .then(async instance => {
+      if (renderGeneration !== this._renderGeneration) {
+        this._disposeWebViewerInstance(instance);
+        return;
+      }
+
+      this._webViewerInstance = instance;
       const currentUserName: string = this.context.pageContext.user.displayName || this.context.pageContext.user.email || this.context.pageContext.user.loginName;
       const userData: UI.MentionsManager.UserData[] = [{
         value: currentUserName,
@@ -75,6 +101,27 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
       this._applyAccessMode(instance, this._accessMode);
     })
     .catch(err => console.error(err));
+  }
+
+  private _disposeWebViewerInstance(instance: WebViewerInstance = this._webViewerInstance): void {
+    if (!instance) {
+      return;
+    }
+
+    interface IDisposableUI {
+      dispose?: () => Promise<void>;
+    }
+
+    try {
+      const disposePromise: Promise<void> | undefined = (instance.UI as unknown as IDisposableUI).dispose?.();
+      disposePromise?.catch(error => console.warn('Unable to dispose existing WebViewer instance.', error));
+    } catch (error) {
+      console.warn('Unable to dispose existing WebViewer instance.', error);
+    }
+
+    if (instance === this._webViewerInstance) {
+      this._webViewerInstance = undefined;
+    }
   }
 
   private _siteServerRelativeUrl(): string {
@@ -419,6 +466,13 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
     this._environmentMessage = this._getEnvironmentMessage();
 
     return super.onInit();
+  }
+
+  protected onDispose(): void {
+    this._renderGeneration++;
+    this._disposeWebViewerInstance();
+    this._viewerContainer = undefined;
+    this.domElement.replaceChildren();
   }
 
 
