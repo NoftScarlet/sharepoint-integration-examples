@@ -47,6 +47,9 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
       path: `https://${process.env.TENANT_ID}.sharepoint.com/sites/${process.env.SITE_NAME}/Shared%20Documents/${process.env.WEBVIEWER_LIB_FOLDER_PATH}/`,
       initialDoc: `${window.location.origin}${siteRelativeUrl}/_api/web/GetFileByServerRelativePath(decodedurl='${this._escapeODataString(fileServerRelativeUrl)}')/$value`,
       filename: initialFileName,
+      // SharePoint Online's CSP does not allow script-src blob:, so force WebViewer's PDF worker
+      // to load its worker JavaScript files directly instead of wrapping them in object URL blobs.
+      disableObjectURLBlobs: true,
     }, this.domElement)
     .then(async instance => {
       const currentUserName: string = this.context.pageContext.user.displayName || this.context.pageContext.user.email || this.context.pageContext.user.loginName;
