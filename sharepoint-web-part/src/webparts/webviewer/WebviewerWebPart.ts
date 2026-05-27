@@ -5,7 +5,8 @@ import {
 } from '@microsoft/sp-property-pane';
 import { BaseClientSideWebPart } from '@microsoft/sp-webpart-base';
 import { IReadonlyTheme } from '@microsoft/sp-component-base';
-import WebViewer, { Core, UI, WebViewerInstance } from '@pdftron/webviewer';
+import WebViewer, { UI, WebViewerInstance } from '@pdftron/webviewer';
+import type { Core } from '@pdftron/webviewer';
 
 import * as strings from 'WebviewerWebPartStrings';
 
@@ -44,6 +45,7 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
     const requestedFileServerRelativeUrl: string = this._getRequestedFileServerRelativeUrl(urlParams, siteRelativeUrl);
     const fileServerRelativeUrl: string = requestedFileServerRelativeUrl || sampleFileServerRelativeUrl;
     const initialFileName: string = urlParams.get('filename') || this._getFileNameFromServerRelativeUrl(fileServerRelativeUrl);
+    const initialDocUrl: string = `${window.location.origin}${siteRelativeUrl}/_api/web/GetFileByServerRelativePath(decodedurl='${this._escapeODataString(fileServerRelativeUrl)}')/$value`;
     const viewerInitKey: string = `${fileServerRelativeUrl}|${initialFileName}`;
 
     if (this._viewerInitKey === viewerInitKey && this._viewerContainer && this.domElement.contains(this._viewerContainer)) {
@@ -61,17 +63,10 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
     this._viewerContainer.style.width = '100%';
     this.domElement.appendChild(this._viewerContainer);
 
-    // SharePoint Online's CSP blocks inline scripts. WebViewer's embedded PDF JavaScript
-    // support uses an iframe with inline scripts for AcroForm actions, so disable it before
-    // loading documents in this SharePoint-hosted sample.
-    Core.disableEmbeddedJavaScript();
-
     WebViewer({
       // We suggest to use the method of uploading static files to the Documents folder in your sharepoint site
       // The provided path below is a template, it may varies in your site
       path: `https://${process.env.TENANT_ID}.sharepoint.com/sites/${process.env.SITE_NAME}/Shared%20Documents/${process.env.WEBVIEWER_LIB_FOLDER_PATH}/`,
-      initialDoc: `${window.location.origin}${siteRelativeUrl}/_api/web/GetFileByServerRelativePath(decodedurl='${this._escapeODataString(fileServerRelativeUrl)}')/$value`,
-      filename: initialFileName,
       // SharePoint Online's CSP does not allow script-src blob:, so force WebViewer's PDF worker
       // to load its worker JavaScript files directly instead of wrapping them in object URL blobs.
       disableObjectURLBlobs: true,
@@ -83,6 +78,11 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
       }
 
       this._webViewerInstance = instance;
+      // SharePoint Online's CSP blocks inline scripts. WebViewer's embedded PDF JavaScript
+      // support uses an iframe with inline scripts for AcroForm actions, so disable it before
+      // loading documents in this SharePoint-hosted sample.
+      instance.Core.disableEmbeddedJavaScript();
+
       const currentUserName: string = this.context.pageContext.user.displayName || this.context.pageContext.user.email || this.context.pageContext.user.loginName;
       const userData: UI.MentionsManager.UserData[] = [{
         value: currentUserName,
@@ -104,6 +104,7 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
       this._createSavedModal(instance);
       this._createMessageModal(instance);
       this._applyAccessMode(instance, this._accessMode);
+      instance.UI.loadDocument(initialDocUrl, { filename: initialFileName });
     })
     .catch(err => console.error(err));
   }
