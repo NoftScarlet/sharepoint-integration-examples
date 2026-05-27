@@ -61,6 +61,11 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
     this._viewerContainer.style.width = '100%';
     this.domElement.appendChild(this._viewerContainer);
 
+    // SharePoint Online's CSP blocks inline scripts. WebViewer's embedded PDF JavaScript
+    // support uses an iframe with inline scripts for AcroForm actions, so disable it before
+    // loading documents in this SharePoint-hosted sample.
+    Core.disableEmbeddedJavaScript();
+
     WebViewer({
       // We suggest to use the method of uploading static files to the Documents folder in your sharepoint site
       // The provided path below is a template, it may varies in your site
