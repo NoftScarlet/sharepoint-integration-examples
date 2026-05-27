@@ -50,8 +50,25 @@ export default class PDFTronCommandSet extends BaseListViewCommandSet<IPDFTronCo
     const fileName = event.selectedRows[0].getValueByName('FileLeafRef');
     const spItemUrl = event.selectedRows[0].getValueByName('.spItemUrl');
     const serverRelativeUrl = this.context.pageContext.web.serverRelativeUrl;
-    const folderName = fileRef.match(`(?<=${serverRelativeUrl}\/)(.*?)(?=\/${fileName})`)[1]; 
+    const folderName = fileRef.substring(serverRelativeUrl.length + 1, fileRef.lastIndexOf('/'));
     const {displayName, email} = this.context.pageContext.user;
+
+    const openInPdfTron = (uniqueId?: string, tempAuth?: string): void => {
+      const viewerUrl: URL = new URL(`${sharepointSiteUrl}/SitePages/${sitePage}`);
+      viewerUrl.searchParams.set('fileUrl', fileRef);
+      viewerUrl.searchParams.set('filename', fileName);
+      viewerUrl.searchParams.set('foldername', folderName);
+      viewerUrl.searchParams.set('username', displayName);
+      viewerUrl.searchParams.set('email', email);
+      if (uniqueId) {
+        viewerUrl.searchParams.set('uniqueId', uniqueId);
+      }
+      if (tempAuth) {
+        viewerUrl.searchParams.set('tempAuth', tempAuth);
+      }
+
+      window.open(viewerUrl.toString());
+    };
 
     switch (event.itemId) {
       case 'OPEN_IN_PDFTRON':
@@ -67,12 +84,15 @@ export default class PDFTronCommandSet extends BaseListViewCommandSet<IPDFTronCo
           // window.open(`${sharepointSiteUrl}/_layouts/15/${sitePage}?filename=${fileName}&foldername=${folderName}&username=${displayName}&email=${email}&uniqueId=${uniqueId}&tempAuth=${tempAuth}`);
 
           // If you have a SharePoint site page that already has the webviewer web parts, the URL should be similar to
-          window.open(`${sharepointSiteUrl}/SitePages/${sitePage}?filename=${fileName}&foldername=${folderName}&username=${displayName}&email=${email}&uniqueId=${uniqueId}&tempAuth=${tempAuth}`);
+          openInPdfTron(uniqueId, tempAuth);
           
           // If you're using sharepoint-static, the URL should be similar to the following
 
           // let staticPageUrl = `https://{your-tenant-id}.sharepoint.com/sites/{site-name}/Shared%20Documents/{your-static-folder-path}`;
           // window.open(`${staticPageUrl}?filename=${fileName}&foldername=${folderName}&username=${displayName}&email=${email}&uniqueId=${uniqueId}&tempAuth=${tempAuth}`);
+        }).catch(error => {
+          console.warn('Unable to read SharePoint download metadata. Opening with FileRef only.', error);
+          openInPdfTron();
         });
         break;
       default:

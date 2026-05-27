@@ -13,33 +13,40 @@ export interface IWebviewerWebPartProps {
   description: string;
 }
 
+type AccessMode = 'read' | 'full';
+
+interface ISharePointBasePermissions {
+  High?: string | number;
+  Low?: string | number;
+}
+
 export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWebPartProps> {
 
   private _isDarkTheme: boolean = false;
   private _environmentMessage: string = '';
   private _mode: string;
+  private _accessMode: AccessMode = 'full';
+  private _modalMessageElement: HTMLElement;
 
   public validateQueryParam(urlParams: URLSearchParams): boolean {
-    const necessaryParams: string[] = ['filename'];
-    let result: boolean = true;
-    necessaryParams.forEach(paramKey => {
-      if (!urlParams.get(paramKey)) {
-        result = false;
-      }
-    });
-    return result;
+    return !!urlParams.get('fileUrl') || (!!urlParams.get('filename') && !!urlParams.get('foldername'));
   }
 
   public render(): void {
     this.domElement.style.height = '1000px';
     const siteRelativeUrl: string = this._siteServerRelativeUrl();
     const sampleFileServerRelativeUrl: string = `${siteRelativeUrl}/${process.env.FOLDER_URL}/webviewer-sharepoint-sample.pdf`;
+    const urlParams: URLSearchParams = new URLSearchParams(window.location.search);
+    const requestedFileServerRelativeUrl: string = this._getRequestedFileServerRelativeUrl(urlParams, siteRelativeUrl);
+    const fileServerRelativeUrl: string = requestedFileServerRelativeUrl || sampleFileServerRelativeUrl;
+    const initialFileName: string = urlParams.get('filename') || this._getFileNameFromServerRelativeUrl(fileServerRelativeUrl);
 
     WebViewer({
       // We suggest to use the method of uploading static files to the Documents folder in your sharepoint site
       // The provided path below is a template, it may varies in your site
       path: `https://${process.env.TENANT_ID}.sharepoint.com/sites/${process.env.SITE_NAME}/Shared%20Documents/${process.env.WEBVIEWER_LIB_FOLDER_PATH}/`,
-      initialDoc: `${window.location.origin}${siteRelativeUrl}/_api/web/GetFileByServerRelativePath(decodedurl='${this._escapeODataString(sampleFileServerRelativeUrl)}')/$value`,
+      initialDoc: `${window.location.origin}${siteRelativeUrl}/_api/web/GetFileByServerRelativePath(decodedurl='${this._escapeODataString(fileServerRelativeUrl)}')/$value`,
+      filename: initialFileName,
     }, this.domElement)
     .then(async instance => {
       const currentUserName: string = this.context.pageContext.user.displayName || this.context.pageContext.user.email || this.context.pageContext.user.loginName;
@@ -52,21 +59,17 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
 
       const { Feature } = instance.UI;
       instance.UI.enableFeatures([Feature.FilePicker]);
-      const urlParams: URLSearchParams = new URLSearchParams(window.location.search);
       const validateQueryParamResult: boolean = this.validateQueryParam(urlParams);
-      this._createSavedModal(instance);
-      this._createSaveFileButton(instance);
       if (validateQueryParamResult) {
         this._mode = "sharepoint-file";
-        const filename: string = urlParams.get("filename");
-        const folderName: string = urlParams.get("foldername");
-        const fileServerRelativeUrl: string = `${siteRelativeUrl}/${folderName}/${filename}`;
-        const docURL: string = `${window.location.origin}${siteRelativeUrl}/_api/web/GetFileByServerRelativePath(decodedurl='${this._escapeODataString(fileServerRelativeUrl)}')/$value`;
-    
-        instance.UI.loadDocument(docURL, {filename});
       } else {
         this._mode = "local-file";
       }
+
+      this._accessMode = await this._resolveAccessMode(urlParams, fileServerRelativeUrl);
+      this._createSavedModal(instance);
+      this._createMessageModal(instance);
+      this._applyAccessMode(instance, this._accessMode);
     })
     .catch(err => console.error(err));
   }
@@ -79,31 +82,207 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
     return value.replace(/'/g, "''");
   }
 
+  private _getRequestedFileServerRelativeUrl(urlParams: URLSearchParams, siteRelativeUrl: string): string | undefined {
+    const fileUrl: string = urlParams.get('fileUrl');
+    if (fileUrl) {
+      return fileUrl;
+    }
+
+    const filename: string = urlParams.get('filename');
+    const folderName: string = urlParams.get('foldername');
+    if (filename && folderName) {
+      return `${siteRelativeUrl}/${folderName}/${filename}`;
+    }
+
+    return undefined;
+  }
+
+  private _getFileNameFromServerRelativeUrl(fileServerRelativeUrl: string): string {
+    const pathParts: string[] = fileServerRelativeUrl.split('/');
+    return pathParts[pathParts.length - 1];
+  }
+
+  private _getFolderUrlFromServerRelativeUrl(fileServerRelativeUrl: string): string {
+    return fileServerRelativeUrl.substring(0, fileServerRelativeUrl.lastIndexOf('/'));
+  }
+
+  private async _resolveAccessMode(urlParams: URLSearchParams, fileServerRelativeUrl: string): Promise<AccessMode> {
+    const overrideRole: string = (urlParams.get('role') || urlParams.get('access') || urlParams.get('mode') || '').toLowerCase();
+    if (['read', 'readonly', 'view', 'viewonly'].indexOf(overrideRole) >= 0) {
+      return 'read';
+    }
+    if (['full', 'edit', 'write'].indexOf(overrideRole) >= 0) {
+      return 'full';
+    }
+
+    try {
+      const permissions: ISharePointBasePermissions = await this._getFileEffectiveBasePermissions(fileServerRelativeUrl);
+      return this._canEditListItems(permissions) ? 'full' : 'read';
+    } catch (error) {
+      console.warn('Unable to resolve SharePoint permissions. Falling back to read-only mode.', error);
+      return 'read';
+    }
+  }
+
+  private async _getFileEffectiveBasePermissions(fileServerRelativeUrl: string): Promise<ISharePointBasePermissions> {
+    const siteRelativeUrl: string = this._siteServerRelativeUrl();
+    const resp: Response = await fetch(`${window.location.origin}${siteRelativeUrl}/_api/web/GetFileByServerRelativePath(decodedurl='${this._escapeODataString(fileServerRelativeUrl)}')/ListItemAllFields/effectiveBasePermissions`, {
+      method: 'GET',
+      credentials: 'same-origin',
+      headers: {
+        'Accept': 'application/json;odata=nometadata'
+      }
+    });
+
+    if (!resp.ok) {
+      throw new Error(`SharePoint permissions request failed: ${resp.status} ${resp.statusText}`);
+    }
+
+    const responseJson: unknown = await resp.json();
+    const json: { d?: unknown; EffectiveBasePermissions?: unknown; High?: string | number; Low?: string | number } = responseJson as { d?: unknown; EffectiveBasePermissions?: unknown; High?: string | number; Low?: string | number };
+    const d: { EffectiveBasePermissions?: unknown; High?: string | number; Low?: string | number } = json.d as { EffectiveBasePermissions?: unknown; High?: string | number; Low?: string | number };
+    return (json.EffectiveBasePermissions || d?.EffectiveBasePermissions || d || json) as ISharePointBasePermissions;
+  }
+
+  private _canEditListItems(permissions: ISharePointBasePermissions): boolean {
+    const lowPermissions: number = typeof permissions.Low === 'string' ? parseInt(permissions.Low, 10) : permissions.Low || 0;
+    const editListItemsPermission: number = 4;
+    return (lowPermissions & editListItemsPermission) === editListItemsPermission;
+  }
+
+  private _applyAccessMode(instance: WebViewerInstance, accessMode: AccessMode): void {
+    if (accessMode === 'read') {
+      instance.UI.enableViewOnlyMode();
+      instance.UI.disableElements(['saveFileButton']);
+      this._installReadOnlyAnnotationGuard(instance);
+      this._showMessage(instance, 'Read-only access', 'You can view this document, but annotations and save-back are disabled for your current SharePoint permissions.');
+      return;
+    }
+
+    this._createSaveFileButton(instance);
+  }
+
+  private _installReadOnlyAnnotationGuard(instance: WebViewerInstance): void {
+    const annotationManager: Core.AnnotationManager = instance.Core.annotationManager;
+    const documentViewer: Core.DocumentViewer = instance.Core.documentViewer;
+    let baselineXfdf: string = '';
+    let restoring: boolean = false;
+
+    const markAnnotationsReadOnly = (): void => {
+      annotationManager.getAnnotationsList().forEach((annotation: Core.Annotations.Annotation) => {
+        annotation.ReadOnly = true;
+      });
+      annotationManager.drawAnnotationsFromList(annotationManager.getAnnotationsList());
+    };
+
+    documentViewer.addEventListener('documentLoaded', async () => {
+      markAnnotationsReadOnly();
+      baselineXfdf = await annotationManager.exportAnnotations();
+    });
+
+    annotationManager.addEventListener('updateAnnotationPermission', (annotation?: Core.Annotations.Annotation) => {
+      if (annotation) {
+        annotation.ReadOnly = true;
+        return;
+      }
+
+      markAnnotationsReadOnly();
+    });
+
+    annotationManager.addEventListener('annotationChanged', async (annotations: Core.Annotations.Annotation[], action: string, info: { imported?: boolean; isUndoRedo?: boolean }) => {
+      if (restoring || info?.imported || info?.isUndoRedo) {
+        return;
+      }
+
+      restoring = true;
+      try {
+        if (action === 'add') {
+          annotationManager.deleteAnnotations(annotations, { imported: true, force: true });
+        } else if (baselineXfdf) {
+          await annotationManager.importAnnotations(baselineXfdf);
+          markAnnotationsReadOnly();
+        }
+
+        this._showMessage(instance, 'Change blocked', 'Your current role is read-only. The attempted annotation change was reverted.');
+      } finally {
+        restoring = false;
+      }
+    });
+  }
+
   private _createSaveFileButton(instance: WebViewerInstance): void {
+    const saveFile = async (): Promise<void> => {
+      if (this._accessMode === 'read') {
+        this._showMessage(instance, 'Save blocked', 'Your current role is read-only. SharePoint save-back is disabled.');
+        return;
+      }
+
+      instance.UI.openElements(['loadingModal']);
+      try {
+        if (this._mode === 'sharepoint-file') {
+          const searchparams: URLSearchParams = new URLSearchParams(window.location.search);
+          const fileUrl: string = searchparams.get('fileUrl');
+          const folderName: string = fileUrl ? this._getFolderUrlFromServerRelativeUrl(fileUrl) : searchparams.get('foldername');
+          const fileName: string = fileUrl ? this._getFileNameFromServerRelativeUrl(fileUrl) : searchparams.get('filename');
+          await this.saveFile(instance, folderName, fileName);
+        } else if (this._mode === 'local-file') {
+          const fileName: string = await instance.Core.documentViewer.getDocument().getFilename();
+          const folderName: string = encodeURIComponent(process.env.FOLDER_URL);
+          await this.saveFile(instance, folderName, fileName);
+        }
+        instance.UI.openElements(['savedModal']);
+      } catch (error) {
+        console.error(error);
+        this._showMessage(instance, 'Save failed', 'SharePoint rejected the save request. Check your file permissions and try again.');
+      } finally {
+        instance.UI.closeElements(['loadingModal']);
+      }
+    };
+
+    interface IModularHeader {
+      items: unknown[];
+      setItems: (items: unknown[]) => void;
+    }
+
+    interface IModularUI {
+      Components?: {
+        CustomButton?: new (options: unknown) => unknown;
+      };
+      getModularHeader?: (dataElement: string) => IModularHeader;
+    }
+
+    const modularUI: IModularUI = instance.UI as unknown as IModularUI;
+    const defaultHeader: IModularHeader = modularUI.getModularHeader?.('default-top-header');
+    if (modularUI.Components?.CustomButton && defaultHeader) {
+      const saveFileButton: unknown = new modularUI.Components.CustomButton({
+        dataElement: 'saveFileButton',
+        className: 'save-file-button',
+        label: 'Save',
+        title: 'Save file to SharePoint',
+        onClick: saveFile,
+        img: 'icon-save',
+        style: {
+          backgroundColor: '#F1F3F5'
+        }
+      });
+      const existingItems: unknown[] = defaultHeader.items || [];
+      const saveButtonExists: boolean = existingItems.some((item: { dataElement?: string } | string) => item === 'saveFileButton' || (typeof item !== 'string' && item?.dataElement === 'saveFileButton'));
+      if (!saveButtonExists) {
+        defaultHeader.setItems([...existingItems, saveFileButton]);
+      }
+      return;
+    }
+
     instance.UI.setHeaderItems((header: UI.Header) => {
       const saveFileButton: unknown = {
         type: 'actionButton',
         dataElement: 'saveFileButton',
-        title: 'Save file to sharepoint',
+        title: 'Save file to SharePoint',
         img: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M0 0h24v24H0z" fill="none"/><path d="M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z"/></svg>',
-        onClick: async () => {
-          instance.UI.openElements(['loadingModal']);
-          if (this._mode === 'sharepoint-file') {
-            const searchparams: URLSearchParams = new URLSearchParams(window.location.search);
-            const folderName: string = searchparams.get('foldername');
-            const fileName: string = searchparams.get('filename');
-            await this.saveFile(instance, folderName, fileName);
-          } else if (this._mode === 'local-file') {
-            const fileName: string = await instance.Core.documentViewer.getDocument().getFilename();
-            const folderName: string = encodeURIComponent(process.env.FOLDER_URL);
-            await this.saveFile(instance, folderName, fileName);
-          }
-          instance.UI.closeElements(['loadingModal']);
-          instance.UI.openElements(['savedModal']);
-        }
+        onClick: saveFile
       };
-      header.get('viewControlsButton').insertBefore(saveFileButton);
-    })
+      header.get('view-controls').insertBefore(saveFileButton);
+    });
   }
 
   /* 
@@ -134,17 +313,23 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
   }
 
   public async saveFile(instance: WebViewerInstance, folderUrl: string, fileName: string): Promise<void> {
+    if (this._accessMode === 'read') {
+      throw new Error('Current user is read-only and cannot save the document.');
+    }
+
     const annotationManager: Core.AnnotationManager = instance.Core.annotationManager;
     const xfdfString: string = await annotationManager.exportAnnotations();
     const fileData: ArrayBuffer = await instance.Core.documentViewer.getDocument().getFileData({ xfdfString });
     const digest: string = await this._getFormDigestValue();
-    const fileArray: Uint8Array= new Uint8Array(fileData);
-    const file: File = new File([fileArray], fileName, {
+    const fileBlob: Blob = new Blob([fileData], {
+      type: 'application/pdf'
+    });
+    const file: File = new File([fileBlob], fileName, {
       type: 'application/pdf'
     });
     const siteRelativeUrl: string = this._siteServerRelativeUrl();
     const folderServerRelativeUrl: string = folderUrl.startsWith('/') ? folderUrl : `${siteRelativeUrl}/${folderUrl}`;
-    await fetch(`${window.location.origin}${siteRelativeUrl}/_api/web/GetFolderByServerRelativePath(decodedurl='${this._escapeODataString(folderServerRelativeUrl)}')/Files/add(url='${this._escapeODataString(fileName)}', overwrite=true)`, {
+    const resp: Response = await fetch(`${window.location.origin}${siteRelativeUrl}/_api/web/GetFolderByServerRelativePath(decodedurl='${this._escapeODataString(folderServerRelativeUrl)}')/Files/add(url='${this._escapeODataString(fileName)}', overwrite=true)`, {
       method: 'POST',
       body: file,
       headers: {
@@ -153,6 +338,10 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
         'Content-Length': fileData.byteLength.toString()
       }
     });
+
+    if (!resp.ok) {
+      throw new Error(`SharePoint save failed: ${resp.status} ${resp.statusText}`);
+    }
   }
 
   private _createSavedModal(instance: WebViewerInstance): void {
@@ -183,6 +372,44 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
       render: null
     }
     instance.UI.addCustomModal(modal);
+  }
+
+  private _createMessageModal(instance: WebViewerInstance): void {
+    this._modalMessageElement = document.createElement('div');
+    this._modalMessageElement.innerText = '';
+
+    interface IModal { 
+      dataElement: string;
+      disableBackdropClick?: boolean; 
+      disableEscapeKeyDown?: boolean; 
+      render: UI.renderCustomModal; 
+      header: unknown; 
+      body: unknown; 
+      footer: unknown; 
+    }
+
+    const modal: IModal = {
+      dataElement: 'accessMessageModal',
+      body: {
+        className: 'accessMessageModal-body',
+        style: {
+          'text-align': 'center'
+        },
+        children: [this._modalMessageElement]
+      },
+      header: null,
+      footer: null,
+      render: null
+    };
+    instance.UI.addCustomModal(modal);
+  }
+
+  private _showMessage(instance: WebViewerInstance, title: string, message: string): void {
+    if (this._modalMessageElement) {
+      this._modalMessageElement.innerText = `${title}\n\n${message}`;
+    }
+
+    instance.UI.openElements(['accessMessageModal']);
   }
 
   protected onInit(): Promise<void> {
