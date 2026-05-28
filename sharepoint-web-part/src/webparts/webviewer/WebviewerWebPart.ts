@@ -15,7 +15,7 @@ export interface IWebviewerWebPartProps {
 }
 
 type AccessMode = 'read' | 'full';
-type DemoUserRole = 'admin' | 'reader' | 'unauthorized' | 'default';
+type DemoUserRole = 'admin' | 'reviewerA' | 'reviewerB' | 'default';
 
 interface ISharePointBasePermissions {
   High?: string | number;
@@ -86,7 +86,8 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
       // loading documents in this SharePoint-hosted sample.
       instance.Core.disableEmbeddedJavaScript();
 
-      const currentUserName: string = this.context.pageContext.user.displayName || this.context.pageContext.user.email || this.context.pageContext.user.loginName;
+      this._accessMode = await this._resolveAccessMode(fileServerRelativeUrl);
+      const currentUserName: string = this._getCurrentUserEmail() || this.context.pageContext.user.displayName || this.context.pageContext.user.loginName;
       const userData: UI.MentionsManager.UserData[] = [{
         value: currentUserName,
         email: this.context.pageContext.user.email
@@ -103,9 +104,9 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
         this._mode = "local-file";
       }
 
-      this._accessMode = await this._resolveAccessMode(fileServerRelativeUrl);
       this._createSavedModal(instance);
       this._createMessageModal(instance);
+      this._installAnnotationPermissionPolicy(instance, currentUserName);
       this._applyAccessMode(instance, this._accessMode);
       this._showWelcomeMessage(instance);
       instance.UI.loadDocument(initialDocUrl, { filename: initialFileName });
@@ -166,16 +167,29 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
     return fileServerRelativeUrl.substring(0, fileServerRelativeUrl.lastIndexOf('/'));
   }
 
+  private _normalizeIdentity(value: string): string {
+    return (value || '').toLowerCase().replace(/^.*\|/, '').trim();
+  }
+
+  private _getCurrentUserEmail(): string {
+    const email: string = this.context.pageContext.user.email || '';
+    if (email) {
+      return this._normalizeIdentity(email);
+    }
+
+    return this._normalizeIdentity(this.context.pageContext.user.loginName || '');
+  }
+
   private _resolveDemoUserRole(): DemoUserRole {
     const userIdentity: string = `${this.context.pageContext.user.email || ''} ${this.context.pageContext.user.loginName || ''}`.toLowerCase();
     if (userIdentity.indexOf('yixiaochen@yctestio.onmicrosoft.com') >= 0) {
       return 'admin';
     }
     if (userIdentity.indexOf('gao@yctestio.onmicrosoft.com') >= 0) {
-      return 'reader';
+      return 'reviewerA';
     }
     if (userIdentity.indexOf('unauthorized@yctestio.onmicrosoft.com') >= 0) {
-      return 'unauthorized';
+      return 'reviewerB';
     }
 
     return 'default';
@@ -183,12 +197,9 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
 
   private async _resolveAccessMode(fileServerRelativeUrl: string): Promise<AccessMode> {
     this._demoUserRole = this._resolveDemoUserRole();
-    this._canPersistChanges = this._demoUserRole !== 'reader' && this._demoUserRole !== 'unauthorized';
 
-    if (this._demoUserRole === 'reader') {
-      return 'read';
-    }
-    if (this._demoUserRole === 'admin' || this._demoUserRole === 'unauthorized') {
+    if (this._demoUserRole === 'admin' || this._demoUserRole === 'reviewerA' || this._demoUserRole === 'reviewerB') {
+      this._canPersistChanges = true;
       return 'full';
     }
 
@@ -238,21 +249,31 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
     }
 
     this._createSaveFileButton(instance);
-    if (this._demoUserRole === 'unauthorized') {
-      this._installUnauthorizedAnnotationGuard(instance);
-    }
   }
 
   private _showWelcomeMessage(instance: WebViewerInstance): void {
-    const welcomeMessage: { title: string; message: string } = this._demoUserRole === 'admin'
-      ? {
+    let welcomeMessage: { title: string; message: string };
+    if (this._demoUserRole === 'admin') {
+      welcomeMessage = {
         title: 'Welcome Admin',
-        message: 'You can review and annotate the document'
-      }
-      : {
-        title: 'Welcome',
-        message: 'You are in read only mode'
+        message: 'You can review, annotate, and manage all reviewers\' annotations.'
       };
+    } else if (this._demoUserRole === 'reviewerA') {
+      welcomeMessage = {
+        title: 'Welcome Reviewer A',
+        message: 'You can add and manage your own annotations.'
+      };
+    } else if (this._demoUserRole === 'reviewerB') {
+      welcomeMessage = {
+        title: 'Welcome Reviewer B',
+        message: 'You can add annotations, but cannot modify annotations created by other reviewers.'
+      };
+    } else {
+      welcomeMessage = {
+        title: 'Welcome',
+        message: this._accessMode === 'read' ? 'You are in read only mode' : 'You can review and annotate the document.'
+      };
+    }
 
     instance.UI.showWarningMessage({
       title: welcomeMessage.title,
@@ -263,35 +284,63 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
     });
   }
 
-  private _installUnauthorizedAnnotationGuard(instance: WebViewerInstance): void {
+  private _installAnnotationPermissionPolicy(instance: WebViewerInstance, currentUserName: string): void {
     const annotationManager: Core.AnnotationManager = instance.Core.annotationManager;
     const documentViewer: Core.DocumentViewer = instance.Core.documentViewer;
+    const annotationHistoryManager: Core.AnnotationHistoryManager = documentViewer.getAnnotationHistoryManager();
     let baselineXfdf: string = '';
     let reverting: boolean = false;
+
+    annotationManager.setPermissionCheckCallback((author: string, annotation: Core.Annotations.Annotation) => {
+      if (this._demoUserRole === 'admin') {
+        return true;
+      }
+      if (this._accessMode === 'read') {
+        return false;
+      }
+
+      const annotationAuthor: string = this._normalizeIdentity(annotation?.Author || author || '');
+      return !annotationAuthor || annotationAuthor === currentUserName;
+    });
 
     documentViewer.addEventListener('documentLoaded', async () => {
       baselineXfdf = await annotationManager.exportAnnotations();
     });
 
     annotationManager.addEventListener('annotationChanged', (annotations: Core.Annotations.Annotation[], action: string, info: { imported?: boolean; isUndoRedo?: boolean }) => {
-      if (reverting || info?.imported || info?.isUndoRedo) {
+      if (this._accessMode === 'read' || reverting || info?.imported || info?.isUndoRedo) {
         return;
       }
 
-      if (action !== 'add' && action !== 'modify' && action !== 'delete') {
+      if (this._demoUserRole === 'admin') {
+        window.setTimeout(async () => {
+          baselineXfdf = await annotationManager.exportAnnotations();
+        }, 0);
+        return;
+      }
+
+      const hasOwnershipViolation: boolean = annotations.some((annotation: Core.Annotations.Annotation) => {
+        const annotationAuthor: string = this._normalizeIdentity(annotation.Author || '');
+        return !!annotationAuthor && annotationAuthor !== currentUserName;
+      });
+
+      if (!hasOwnershipViolation || (action !== 'modify' && action !== 'delete')) {
+        window.setTimeout(async () => {
+          baselineXfdf = await annotationManager.exportAnnotations();
+        }, 0);
         return;
       }
 
       reverting = true;
       window.setTimeout(async () => {
         try {
-          if (action === 'add') {
-            annotationManager.deleteAnnotations(annotations, { imported: true, force: true });
+          if (annotationHistoryManager.canUndo()) {
+            await annotationHistoryManager.undo();
           } else if (baselineXfdf) {
             await annotationManager.importAnnotations(baselineXfdf);
           }
 
-          instance.UI.displayErrorMessage('Security Violation: Unauthorized document modification detected. Actions have been automatically reverted by tenant policy.');
+          instance.UI.displayErrorMessage('Security Restriction: You are not authorized to modify or delete annotations created by another reviewer.');
         } finally {
           reverting = false;
         }
