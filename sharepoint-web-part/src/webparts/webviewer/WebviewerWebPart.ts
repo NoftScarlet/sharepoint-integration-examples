@@ -108,7 +108,7 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
       this._createMessageModal(instance);
       this._installAnnotationPermissionPolicy(instance, currentUserName);
       this._applyAccessMode(instance, this._accessMode);
-      this._showWelcomeMessage(instance);
+      this._showWelcomeMessageAfterDocumentLoad(instance, renderGeneration);
       instance.UI.loadDocument(initialDocUrl, { filename: initialFileName });
     })
     .catch(err => console.error(err));
@@ -281,6 +281,22 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
       confirmBtnText: 'OK',
       onConfirm: () => Promise.resolve(),
       onCancel: () => Promise.resolve()
+    });
+  }
+
+  private _showWelcomeMessageAfterDocumentLoad(instance: WebViewerInstance, renderGeneration: number): void {
+    let welcomeMessageShown: boolean = false;
+    instance.Core.documentViewer.addEventListener('documentLoaded', () => {
+      if (welcomeMessageShown || renderGeneration !== this._renderGeneration) {
+        return;
+      }
+
+      welcomeMessageShown = true;
+      window.setTimeout(() => {
+        if (renderGeneration === this._renderGeneration) {
+          this._showWelcomeMessage(instance);
+        }
+      }, 250);
     });
   }
 
