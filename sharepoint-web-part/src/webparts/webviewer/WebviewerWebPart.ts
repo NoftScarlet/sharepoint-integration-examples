@@ -67,10 +67,9 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
     this.domElement.appendChild(this._viewerContainer);
 
     WebViewer({
-      // Use a static CDN for the WebViewer runtime in this demo. SharePoint document libraries can
-      // serve uploaded .js files with a non-script MIME type and X-Content-Type-Options: nosniff,
-      // which Safari refuses to execute.
-      path: 'https://cdn.jsdelivr.net/npm/@pdftron/webviewer@11.12.0/public',
+      // We suggest to use the method of uploading static files to the Documents folder in your sharepoint site
+      // The provided path below is a template, it may varies in your site
+      path: `https://${process.env.TENANT_ID}.sharepoint.com/sites/${process.env.SITE_NAME}/Shared%20Documents/${process.env.WEBVIEWER_LIB_FOLDER_PATH}`,
       // SharePoint Online's CSP does not allow script-src blob:, so force WebViewer's PDF worker
       // to load its worker JavaScript files directly instead of wrapping them in object URL blobs.
       disableObjectURLBlobs: true,
