@@ -69,7 +69,7 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
     WebViewer({
       // We suggest to use the method of uploading static files to the Documents folder in your sharepoint site
       // The provided path below is a template, it may varies in your site
-      path: `https://${process.env.TENANT_ID}.sharepoint.com/sites/${process.env.SITE_NAME}/Shared%20Documents/${process.env.WEBVIEWER_LIB_FOLDER_PATH}/`,
+      path: `https://${process.env.TENANT_ID}.sharepoint.com/sites/${process.env.SITE_NAME}/Shared%20Documents/${process.env.WEBVIEWER_LIB_FOLDER_PATH}`,
       // SharePoint Online's CSP does not allow script-src blob:, so force WebViewer's PDF worker
       // to load its worker JavaScript files directly instead of wrapping them in object URL blobs.
       disableObjectURLBlobs: true,
