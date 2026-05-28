@@ -266,7 +266,7 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
     } else if (this._demoUserRole === 'reviewerB') {
       welcomeMessage = {
         title: 'Welcome Reviewer B',
-        message: 'You can add annotations, but cannot modify annotations created by other reviewers.'
+        message: 'Full editing UI is enabled for this security demo. Any unauthorized annotation change will be detected and reverted.'
       };
     } else {
       welcomeMessage = {
@@ -314,6 +314,9 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
       if (this._accessMode === 'read') {
         return false;
       }
+      if (this._demoUserRole === 'reviewerB') {
+        return true;
+      }
 
       const annotationAuthor: string = this._normalizeIdentity(annotation?.Author || author || '');
       return !annotationAuthor || annotationAuthor === currentUserName;
@@ -332,6 +335,25 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
         window.setTimeout(async () => {
           baselineXfdf = await annotationManager.exportAnnotations();
         }, 0);
+        return;
+      }
+
+      const shouldRevertUnauthorizedUserChange: boolean = this._demoUserRole === 'reviewerB' && (action === 'add' || action === 'modify' || action === 'delete');
+      if (shouldRevertUnauthorizedUserChange) {
+        reverting = true;
+        window.setTimeout(async () => {
+          try {
+            if (annotationHistoryManager.canUndo()) {
+              await annotationHistoryManager.undo();
+            } else if (baselineXfdf) {
+              await annotationManager.importAnnotations(baselineXfdf);
+            }
+
+            instance.UI.displayErrorMessage('Security Restriction: Unauthorized annotation changes are not allowed. WebViewer detected the violation and reverted the attempted change.');
+          } finally {
+            reverting = false;
+          }
+        }, 1000);
         return;
       }
 

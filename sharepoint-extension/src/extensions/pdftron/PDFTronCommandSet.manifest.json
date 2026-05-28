@@ -17,7 +17,7 @@
 
   "items": {
     "OPEN_IN_PDFTRON": {
-      "title": { "default": "Open in PDFTron" },
+      "title": { "default": "Open in Apryse WebViewer" },
       "type": "command"
     }
   }
