@@ -3,7 +3,7 @@
   "solution": {
     "name": "webviewer-client-side-solution",
     "id": "747908ae-a526-4a2e-b88d-91a6c7422e70",
-    "version": "1.0.0.12",
+    "version": "1.0.0.13",
     "includeClientSideAssets": true,
     "skipFeatureDeployment": true,
     "isDomainIsolated": false,

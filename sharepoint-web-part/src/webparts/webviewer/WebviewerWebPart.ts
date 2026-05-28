@@ -15,6 +15,7 @@ export interface IWebviewerWebPartProps {
 }
 
 type AccessMode = 'read' | 'full';
+type DemoUserRole = 'admin' | 'reader' | 'unauthorized' | 'default';
 
 interface ISharePointBasePermissions {
   High?: string | number;
@@ -32,6 +33,8 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
   private _viewerContainer: HTMLElement | undefined;
   private _viewerInitKey: string = '';
   private _renderGeneration: number = 0;
+  private _demoUserRole: DemoUserRole = 'default';
+  private _canPersistChanges: boolean = true;
 
   public validateQueryParam(urlParams: URLSearchParams): boolean {
     return !!urlParams.get('fileUrl') || (!!urlParams.get('filename') && !!urlParams.get('foldername'));
@@ -100,10 +103,11 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
         this._mode = "local-file";
       }
 
-      this._accessMode = await this._resolveAccessMode(urlParams, fileServerRelativeUrl);
+      this._accessMode = await this._resolveAccessMode(fileServerRelativeUrl);
       this._createSavedModal(instance);
       this._createMessageModal(instance);
       this._applyAccessMode(instance, this._accessMode);
+      this._showWelcomeMessage(instance);
       instance.UI.loadDocument(initialDocUrl, { filename: initialFileName });
     })
     .catch(err => console.error(err));
@@ -162,18 +166,37 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
     return fileServerRelativeUrl.substring(0, fileServerRelativeUrl.lastIndexOf('/'));
   }
 
-  private async _resolveAccessMode(urlParams: URLSearchParams, fileServerRelativeUrl: string): Promise<AccessMode> {
-    const overrideRole: string = (urlParams.get('role') || urlParams.get('access') || urlParams.get('mode') || '').toLowerCase();
-    if (['read', 'readonly', 'view', 'viewonly'].indexOf(overrideRole) >= 0) {
+  private _resolveDemoUserRole(): DemoUserRole {
+    const userIdentity: string = `${this.context.pageContext.user.email || ''} ${this.context.pageContext.user.loginName || ''}`.toLowerCase();
+    if (userIdentity.indexOf('yixiaochen@yctestio.onmicrosoft.com') >= 0) {
+      return 'admin';
+    }
+    if (userIdentity.indexOf('gao@yctestio.onmicrosoft.com') >= 0) {
+      return 'reader';
+    }
+    if (userIdentity.indexOf('unauthorized@yctestio.onmicrosoft.com') >= 0) {
+      return 'unauthorized';
+    }
+
+    return 'default';
+  }
+
+  private async _resolveAccessMode(fileServerRelativeUrl: string): Promise<AccessMode> {
+    this._demoUserRole = this._resolveDemoUserRole();
+    this._canPersistChanges = this._demoUserRole !== 'reader' && this._demoUserRole !== 'unauthorized';
+
+    if (this._demoUserRole === 'reader') {
       return 'read';
     }
-    if (['full', 'edit', 'write'].indexOf(overrideRole) >= 0) {
+    if (this._demoUserRole === 'admin' || this._demoUserRole === 'unauthorized') {
       return 'full';
     }
 
     try {
       const permissions: ISharePointBasePermissions = await this._getFileEffectiveBasePermissions(fileServerRelativeUrl);
-      return this._canEditListItems(permissions) ? 'full' : 'read';
+      const canEdit: boolean = this._canEditListItems(permissions);
+      this._canPersistChanges = canEdit;
+      return canEdit ? 'full' : 'read';
     } catch (error) {
       console.warn('Unable to resolve SharePoint permissions. Falling back to read-only mode.', error);
       return 'read';
@@ -211,11 +234,69 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
       instance.UI.enableViewOnlyMode();
       instance.UI.disableElements(['saveFileButton']);
       this._installReadOnlyAnnotationGuard(instance);
-      this._showMessage(instance, 'Read-only access', 'You can view this document, but annotations and save-back are disabled for your current SharePoint permissions.');
       return;
     }
 
     this._createSaveFileButton(instance);
+    if (this._demoUserRole === 'unauthorized') {
+      this._installUnauthorizedAnnotationGuard(instance);
+    }
+  }
+
+  private _showWelcomeMessage(instance: WebViewerInstance): void {
+    const welcomeMessage: { title: string; message: string } = this._demoUserRole === 'admin'
+      ? {
+        title: 'Welcome Admin',
+        message: 'You can review and annotate the document'
+      }
+      : {
+        title: 'Welcome',
+        message: 'You are in read only mode'
+      };
+
+    instance.UI.showWarningMessage({
+      title: welcomeMessage.title,
+      message: welcomeMessage.message,
+      confirmBtnText: 'OK',
+      onConfirm: () => Promise.resolve(),
+      onCancel: () => Promise.resolve()
+    });
+  }
+
+  private _installUnauthorizedAnnotationGuard(instance: WebViewerInstance): void {
+    const annotationManager: Core.AnnotationManager = instance.Core.annotationManager;
+    const documentViewer: Core.DocumentViewer = instance.Core.documentViewer;
+    let baselineXfdf: string = '';
+    let reverting: boolean = false;
+
+    documentViewer.addEventListener('documentLoaded', async () => {
+      baselineXfdf = await annotationManager.exportAnnotations();
+    });
+
+    annotationManager.addEventListener('annotationChanged', (annotations: Core.Annotations.Annotation[], action: string, info: { imported?: boolean; isUndoRedo?: boolean }) => {
+      if (reverting || info?.imported || info?.isUndoRedo) {
+        return;
+      }
+
+      if (action !== 'add' && action !== 'modify' && action !== 'delete') {
+        return;
+      }
+
+      reverting = true;
+      window.setTimeout(async () => {
+        try {
+          if (action === 'add') {
+            annotationManager.deleteAnnotations(annotations, { imported: true, force: true });
+          } else if (baselineXfdf) {
+            await annotationManager.importAnnotations(baselineXfdf);
+          }
+
+          instance.UI.displayErrorMessage('Security Violation: Unauthorized document modification detected. Actions have been automatically reverted by tenant policy.');
+        } finally {
+          reverting = false;
+        }
+      }, 1000);
+    });
   }
 
   private _installReadOnlyAnnotationGuard(instance: WebViewerInstance): void {
@@ -268,8 +349,8 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
 
   private _createSaveFileButton(instance: WebViewerInstance): void {
     const saveFile = async (): Promise<void> => {
-      if (this._accessMode === 'read') {
-        this._showMessage(instance, 'Save blocked', 'Your current role is read-only. SharePoint save-back is disabled.');
+      if (!this._canPersistChanges) {
+        instance.UI.displayErrorMessage('Security Violation: Unauthorized document save detected. The document was not saved.');
         return;
       }
 
@@ -369,8 +450,8 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
   }
 
   public async saveFile(instance: WebViewerInstance, folderUrl: string, fileName: string): Promise<void> {
-    if (this._accessMode === 'read') {
-      throw new Error('Current user is read-only and cannot save the document.');
+    if (!this._canPersistChanges) {
+      throw new Error('Current user is not authorized to save the document.');
     }
 
     const annotationManager: Core.AnnotationManager = instance.Core.annotationManager;
