@@ -244,6 +244,52 @@ Upload the full WebViewer `public` folder, not just selected top-level files. We
 
 Ensure the WebViewer `path` ends with `/`. Do not force `ui/index.html` for the SPFx web-component flow.
 
+### Guest cannot see "Open in Apryse WebViewer" or gets a generic page error
+
+This is almost always an **SPFx client-side asset hosting permission** problem, not a demo-site permission problem, even if the guest has Full Control on the demo site.
+
+Both SPFx packages self-host their JS bundles (`includeClientSideAssets: true`) in the tenant App Catalog's built-in **Client Side Assets** library (`https://<tenant>.sharepoint.com/sites/appcatalog`), not on the demo site. A guest with access only to the demo site cannot load these bundles, which causes:
+
+- The extension's command silently fails to register → no "Open in Apryse WebViewer" menu item.
+- The web part's bundle fails to load → generic `Something went wrong` / `[object Object]` error, or in the browser console:
+  ```
+  Refused to execute script from '.../ClientSideAssets/....js' because its MIME type ('') is not executable
+  Script error for "...WebviewerWebPartStrings"
+  ```
+
+**Do not try to fix this by hosting the bundles yourself on a regular library** (e.g. `SiteAssets` via `cdnBasePath`). Regular SharePoint document libraries do not serve `.js` files with an executable MIME type for the SPFx loader, even with `NoScriptSite`/custom script enabled on the site — only the App Catalog's special `Client Side Assets` list type does this correctly. This was tried and confirmed not to work.
+
+**Correct fix: grant Read access to the App Catalog's `Client Side Assets` library**, and automate it with a dynamic Entra security group so every guest (current and future) gets access with zero manual steps per invite:
+
+1. Get the library's list ID:
+   ```sh
+   m365 spo list list --webUrl "https://<tenant>.sharepoint.com/sites/appcatalog" --output json
+   # Look for "Client Side Assets" (note the spaces in the title)
+   ```
+2. Ensure the App Catalog site allows sharing with existing external users (it is often more locked down than your regular sites):
+   ```sh
+   m365 spo site set --url "https://<tenant>.sharepoint.com/sites/appcatalog" --sharingCapability ExistingExternalUserSharingOnly --wait
+   ```
+3. Break role inheritance on the library (one-time, use `--force` to skip the confirmation prompt which otherwise hangs non-interactive shells):
+   ```sh
+   m365 spo list roleinheritance break --webUrl "https://<tenant>.sharepoint.com/sites/appcatalog" --listId "<client-side-assets-list-id>" --force
+   ```
+4. Create a dynamic Entra security group for all guests (requires Entra ID P1/P2 — included in `DEVELOPERPACK_V2_E5` M365 Developer Program tenants):
+   ```sh
+   m365 entra group add --displayName "Sandbox Guest Asset Readers" --type security --mailNickname "sandboxguestreaders"
+   # Then PATCH it to a dynamic group (CLI has no direct flag for this):
+   m365 request --url "https://graph.microsoft.com/v1.0/groups/<group-id>" --method patch \
+     --content-type "application/json" \
+     --body '{"groupTypes":["DynamicMembership"],"membershipRule":"(user.userType -eq \"Guest\")","membershipRuleProcessingState":"On"}'
+   ```
+   The guest's Entra user object (and `userType: Guest`) is created as soon as an invitation is sent, so the dynamic group picks up new guests within seconds — no need to wait for them to accept.
+5. Grant the group Read on the library, once:
+   ```sh
+   m365 spo list roleassignment add --webUrl "https://<tenant>.sharepoint.com/sites/appcatalog" --listId "<client-side-assets-list-id>" --entraGroupId "<group-id>" --roleDefinitionName "Read"
+   ```
+
+After this one-time setup, inviting a new guest to the demo site is the only step needed — no per-guest CLI commands required for the App Catalog assets.
+
 ## Notes from a verified deployment
 
 The sample was verified with this pattern:
@@ -251,5 +297,6 @@ The sample was verified with this pattern:
 - WebViewer package pinned to `11.12.0`.
 - Full WebViewer runtime uploaded to `Shared Documents/Webviewer/js/lib-11.12.0`.
 - Web part `.env` pointed to `Webviewer/js/lib-11.12.0`.
+- `localStorage.removeItem('init_timestamp')` is called right before the `WebViewer(...)` constructor in [WebviewerWebPart.ts](sharepoint-web-part/src/webparts/webviewer/WebviewerWebPart.ts) to clear WebViewer's trial-tracking timestamp on every load.
 - Web part solution version bumped and deployed as a new package version.
 - Site app upgraded after deployment.

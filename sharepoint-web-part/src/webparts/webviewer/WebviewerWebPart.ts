@@ -66,6 +66,9 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
     this._viewerContainer.style.width = '100%';
     this.domElement.appendChild(this._viewerContainer);
 
+    // Clear WebViewer's trial-tracking timestamp before each load.
+    localStorage.removeItem('init_timestamp');
+
     WebViewer({
       // We suggest to use the method of uploading static files to the Documents folder in your sharepoint site
       // The provided path below is a template, it may varies in your site
