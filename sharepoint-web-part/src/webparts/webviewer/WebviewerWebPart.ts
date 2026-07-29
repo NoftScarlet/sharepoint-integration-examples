@@ -191,7 +191,7 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
     if (userIdentity.indexOf('gao@yctestio.onmicrosoft.com') >= 0) {
       return 'reviewerA';
     }
-    if (userIdentity.indexOf('unauthorized@yctestio.onmicrosoft.com') >= 0) {
+    if (userIdentity.indexOf('tsons90001@gmail.com') >= 0) {
       return 'reviewerB';
     }
 
