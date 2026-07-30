@@ -76,6 +76,8 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
       // SharePoint Online's CSP does not allow script-src blob:, so force WebViewer's PDF worker
       // to load its worker JavaScript files directly instead of wrapping them in object URL blobs.
       disableObjectURLBlobs: true,
+      // TEST: enable PDFNet (fullAPI) to evaluate client-side Digital Signature support inside SharePoint.
+      fullAPI: true,
     }, this._viewerContainer)
     .then(async instance => {
       if (renderGeneration !== this._renderGeneration) {
@@ -112,9 +114,93 @@ export default class WebviewerWebPart extends BaseClientSideWebPart<IWebviewerWe
       this._installAnnotationPermissionPolicy(instance, currentUserName);
       this._applyAccessMode(instance, this._accessMode);
       this._showWelcomeMessageAfterDocumentLoad(instance, renderGeneration);
+      // TEST: temporary button to prove out client-side PDFNet digital signature support inside SharePoint.
+      this._createDigitalSignatureTestButton(instance, initialDocUrl);
       instance.UI.loadDocument(initialDocUrl, { filename: initialFileName });
     })
     .catch(err => console.error(err));
+  }
+
+  /**
+   * TEST ONLY: proves whether PDFNet (fullAPI) digital-signature certification works
+   * when the WebViewer runtime and a test .pfx certificate are both hosted on SharePoint.
+   * Not part of the production sample - remove after the feasibility test is complete.
+   */
+  private _createDigitalSignatureTestButton(instance: WebViewerInstance, docUrl: string): void {
+    const siteRelativeUrl: string = this._siteServerRelativeUrl();
+    const certUrl: string = `${window.location.origin}${siteRelativeUrl}/_api/web/GetFileByServerRelativePath(decodedurl='${this._escapeODataString(`${siteRelativeUrl}/Shared Documents/Webviewer/certs/sharepoint-test-signing.pfx`)}')/$value`;
+
+    const testDigitalSignature = async (): Promise<void> => {
+      console.log('[DigSigTest] Starting PDFNet digital signature test...');
+      try {
+        const PDFNet: typeof Core.PDFNet = instance.Core.PDFNet;
+        await PDFNet.initialize();
+
+        const doc: Core.PDFNet.PDFDoc = await PDFNet.PDFDoc.createFromURL(docUrl);
+        doc.lock();
+
+        const certField: Core.PDFNet.DigitalSignatureField = await doc.createDigitalSignatureField('SharePointTestSignature');
+        const page1: Core.PDFNet.Page = await doc.getPage(1);
+        const widgetAnnot = await PDFNet.SignatureWidget.createWithDigitalSignatureField(doc, new PDFNet.Rect(0, 100, 200, 150), certField);
+        await page1.annotPushBack(widgetAnnot);
+
+        await certField.certifyOnNextSaveFromURL(certUrl, 'testpass123');
+        await certField.setLocation('SharePoint Online (vth61 sandbox)');
+        await certField.setReason('Feasibility test: client-side PDFNet digital signature inside SharePoint.');
+
+        console.log('[DigSigTest] Saving (this triggers the actual signing operation)...');
+        const docBuffer: Uint8Array = await doc.saveMemoryBuffer(0);
+        console.log('[DigSigTest] SUCCESS: document signed, buffer length =', docBuffer.length);
+
+        const hasSignatures: boolean = await doc.hasSignatures();
+        console.log('[DigSigTest] doc.hasSignatures() after signing =', hasSignatures);
+
+        // Download the actual signed bytes so it can be opened/verified in Adobe Reader.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const signedBlob: Blob = new Blob([docBuffer as any], { type: 'application/pdf' });
+        const downloadUrl: string = URL.createObjectURL(signedBlob);
+        const downloadLink: HTMLAnchorElement = document.createElement('a');
+        downloadLink.href = downloadUrl;
+        downloadLink.download = 'sharepoint-digital-signature-test-SIGNED.pdf';
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        document.body.removeChild(downloadLink);
+        URL.revokeObjectURL(downloadUrl);
+
+        instance.UI.displayErrorMessage(`Digital signature test PASSED. Signed buffer length: ${docBuffer.length}, hasSignatures: ${hasSignatures}. Check your downloads for sharepoint-digital-signature-test-SIGNED.pdf`);
+      } catch (error) {
+        console.error('[DigSigTest] FAILED:', error);
+        instance.UI.displayErrorMessage(`Digital signature test FAILED: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    };
+
+    interface IModularHeader {
+      items: unknown[];
+      setItems: (items: unknown[]) => void;
+    }
+    interface IModularUI {
+      Components?: {
+        CustomButton?: new (options: unknown) => unknown;
+      };
+      getModularHeader?: (dataElement: string) => IModularHeader;
+    }
+    const modularUI: IModularUI = instance.UI as unknown as IModularUI;
+    const defaultHeader: IModularHeader = modularUI.getModularHeader?.('default-top-header');
+    if (modularUI.Components?.CustomButton && defaultHeader) {
+      const testButton: unknown = new modularUI.Components.CustomButton({
+        dataElement: 'digSigTestButton',
+        className: 'dig-sig-test-button',
+        label: 'Test Digital Sig',
+        title: 'TEST: PDFNet digital signature feasibility test',
+        onClick: testDigitalSignature,
+        img: 'icon-tool-fill-and-sign',
+        style: {
+          backgroundColor: '#FFE8A1'
+        }
+      });
+      const existingItems: unknown[] = defaultHeader.items || [];
+      defaultHeader.setItems([...existingItems, testButton]);
+    }
   }
 
   private _disposeWebViewerInstance(instance: WebViewerInstance = this._webViewerInstance): void {
